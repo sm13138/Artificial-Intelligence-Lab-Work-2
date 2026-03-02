@@ -1,133 +1,255 @@
 #include <iostream>
+#include <vector>
+#include <cmath>
 using namespace std;
 
-// Simple decision tree for the "waiting for a table" problem.
-// We use a hard-coded tree learned from examples (conceptually like ID3),
-// and also show a very small entropy/information gain calculation on a toy dataset.
+// Decision tree learning (ID3-style) for the "waiting for a table" problem.
+// We use a very small dataset and build a tree automatically from it.
 
-// Attributes (simplified version of the classic example):
-// - Alternate (alt): is there an alternative restaurant? (yes/no)
-// - Hungry (hungry): is the customer hungry? (yes/no)
-// - Patrons (patrons): number of people in the restaurant (0/some/full)
-// - Price (price): cheap/normal/expensive
-// - WaitEstimate (wait): estimated waiting time (0-10 / 10-30 / 30-60 / >60)
-// Target: Wait? (yes/no)
+// Attributes:
+// 0: alt       (0=no, 1=yes)
+// 1: hungry    (0=no, 1=yes)
+// 2: patrons   (0=none, 1=some, 2=full)
+// 3: price     (0=cheap, 1=normal, 2=expensive)
+// 4: wait      (0=0-10, 1=10-30, 2=30-60, 3=>60)
+// Target label: waitDecision (0=no, 1=yes)
 
 struct Example {
-    bool alt;
-    bool hungry;
-    int patrons;   // 0 = none, 1 = some, 2 = full
-    int price;     // 0 = cheap, 1 = normal, 2 = expensive
-    int wait;      // 0 = 0-10, 1 = 10-30, 2 = 30-60, 3 = >60
-    bool waitDecision;
+    int attr[5];   // attributes encoded as small integers
+    int label;     // 0 = do not wait, 1 = wait
 };
 
-// Very small dataset (inspired by textbook)
-const int N = 4;
+// Very small dataset (toy data, inspired by textbook)
+const int N = 8;
 Example dataset[N] = {
-    {true,  true,  2, 2, 3, false},
-    {true,  true,  2, 1, 1, true},
-    {false, true,  1, 0, 0, true},
-    {true,  false, 1, 2, 0, false}
+    {{1, 1, 2, 2, 3}, 0}, // alt=yes, hungry=yes, patrons=full,  price=exp, wait=>60  -> no
+    {{1, 1, 2, 1, 1}, 1}, // alt=yes, hungry=yes, patrons=full,  price=norm, wait=10-30 -> yes
+    {{0, 1, 1, 0, 0}, 1}, // alt=no,  hungry=yes, patrons=some, price=cheap, wait=0-10 -> yes
+    {{1, 0, 1, 2, 0}, 0}, // alt=yes, hungry=no,  patrons=some, price=exp,  wait=0-10 -> no
+    {{0, 1, 0, 1, 0}, 0}, // alt=no,  hungry=yes, patrons=none, price=norm, wait=0-10 -> no
+    {{0, 0, 2, 1, 2}, 0}, // alt=no,  hungry=no,  patrons=full, price=norm, wait=30-60 -> no
+    {{1, 1, 1, 1, 1}, 1}, // alt=yes, hungry=yes, patrons=some, price=norm, wait=10-30 -> yes
+    {{1, 0, 2, 0, 1}, 1}  // alt=yes, hungry=no,  patrons=full, price=cheap, wait=10-30 -> yes
 };
 
-// Compute entropy H(Y) for binary classification.
+// Number of possible values for each attribute (for splitting)
+int attributeDomainSize[5] = {2, 2, 3, 3, 4};
+
+struct Node {
+    bool isLeaf;
+    int  classLabel;       // only valid if isLeaf == true (0 or 1)
+    int  attributeIndex;   // which attribute to test at this node
+    int  numChildren;      // how many children this attribute has
+    Node* children[4];     // child for each attribute value (max 4 here)
+
+    Node() {
+        isLeaf = false;
+        classLabel = 0;
+        attributeIndex = -1;
+        numChildren = 0;
+        for (int i = 0; i < 4; ++i) children[i] = nullptr;
+    }
+};
+
 double entropy(double pYes, double pNo) {
     auto log2safe = [](double x) {
         if (x <= 0.0) return 0.0;
         return log(x) / log(2.0);
     };
     double h = 0.0;
-    if (pYes > 0) h -= pYes * log2safe(pYes);
-    if (pNo > 0)  h -= pNo * log2safe(pNo);
+    if (pYes > 0.0) h -= pYes * log2safe(pYes);
+    if (pNo  > 0.0) h -= pNo  * log2safe(pNo);
     return h;
 }
 
-// Compute information gain of splitting on "hungry" attribute.
-double infoGainOnHungry() {
+// Compute information gain for splitting "examples" on attribute "attrIndex"
+double informationGain(const vector<int> &exampleIndices, int attrIndex) {
+    if (exampleIndices.empty()) return 0.0;
+
     int yesCount = 0, noCount = 0;
-    for (int i = 0; i < N; ++i) {
-        if (dataset[i].waitDecision) yesCount++;
+    for (int idx : exampleIndices) {
+        if (dataset[idx].label == 1) yesCount++;
         else noCount++;
     }
-    double total = N;
+    double total = (double)exampleIndices.size();
     double pYes = yesCount / total;
-    double pNo = noCount / total;
+    double pNo  = noCount / total;
     double baseEntropy = entropy(pYes, pNo);
 
-    // Split by hungry = true/false
-    int hungryYesY = 0, hungryYesN = 0, hungryYesTotal = 0;
-    int hungryNoY = 0, hungryNoN = 0, hungryNoTotal = 0;
-    for (int i = 0; i < N; ++i) {
-        if (dataset[i].hungry) {
-            hungryYesTotal++;
-            if (dataset[i].waitDecision) hungryYesY++; else hungryYesN++;
-        } else {
-            hungryNoTotal++;
-            if (dataset[i].waitDecision) hungryNoY++; else hungryNoN++;
-        }
+    int k = attributeDomainSize[attrIndex];
+    // counts per attribute value
+    int valueTotal[4] = {0, 0, 0, 0};
+    int valueYes[4]   = {0, 0, 0, 0};
+    int valueNo[4]    = {0, 0, 0, 0};
+
+    for (int idx : exampleIndices) {
+        int v = dataset[idx].attr[attrIndex];
+        valueTotal[v]++;
+        if (dataset[idx].label == 1) valueYes[v]++;
+        else valueNo[v]++;
     }
 
     double condEntropy = 0.0;
-    if (hungryYesTotal > 0) {
-        double py = hungryYesY / (double)hungryYesTotal;
-        double pn = hungryYesN / (double)hungryYesTotal;
-        condEntropy += (hungryYesTotal / total) * entropy(py, pn);
-    }
-    if (hungryNoTotal > 0) {
-        double py = hungryNoY / (double)hungryNoTotal;
-        double pn = hungryNoN / (double)hungryNoTotal;
-        condEntropy += (hungryNoTotal / total) * entropy(py, pn);
+    for (int v = 0; v < k; ++v) {
+        if (valueTotal[v] == 0) continue;
+        double py = valueYes[v] / (double)valueTotal[v];
+        double pn = valueNo[v]  / (double)valueTotal[v];
+        condEntropy += (valueTotal[v] / total) * entropy(py, pn);
     }
 
     return baseEntropy - condEntropy;
 }
 
-// Hard-coded decision tree for demonstration:
-// (simplified from the classic restaurant example)
-//
-// if (patrons == 0) -> don't wait
-// else if (patrons == 1) -> wait
-// else // patrons == full
-//    if (price == expensive && wait == long) -> don't wait
-//    else -> wait
-
-bool classifyWaitDecision(bool alt, bool hungry, int patrons, int price, int wait) {
-    (void)alt;    // unused in this simplified tree
-    (void)hungry; // unused in this simplified tree
-
-    if (patrons == 0) return false;
-    if (patrons == 1) return true;
-    // patrons == full
-    if (price == 2 && (wait == 2 || wait == 3)) {
-        return false;
+// Check if all examples have the same label
+bool allSameLabel(const vector<int> &exampleIndices, int &labelOut) {
+    if (exampleIndices.empty()) return false;
+    labelOut = dataset[exampleIndices[0]].label;
+    for (int idx : exampleIndices) {
+        if (dataset[idx].label != labelOut) return false;
     }
     return true;
 }
 
+// Majority label in a set of examples
+int majorityLabel(const vector<int> &exampleIndices) {
+    int yesCount = 0, noCount = 0;
+    for (int idx : exampleIndices) {
+        if (dataset[idx].label == 1) yesCount++;
+        else noCount++;
+    }
+    return (yesCount >= noCount) ? 1 : 0;
+}
+
+// ID3-style recursive tree construction
+Node* buildTree(const vector<int> &exampleIndices, const vector<int> &remainingAttributes) {
+    Node* node = new Node();
+
+    // Stopping condition 1: all examples same label
+    int sameLabel;
+    if (allSameLabel(exampleIndices, sameLabel)) {
+        node->isLeaf = true;
+        node->classLabel = sameLabel;
+        return node;
+    }
+
+    // Stopping condition 2: no attributes left
+    if (remainingAttributes.empty()) {
+        node->isLeaf = true;
+        node->classLabel = majorityLabel(exampleIndices);
+        return node;
+    }
+
+    // Choose attribute with maximum information gain
+    double bestGain = -1.0;
+    int bestAttr = -1;
+    for (int attr : remainingAttributes) {
+        double g = informationGain(exampleIndices, attr);
+        if (g > bestGain) {
+            bestGain = g;
+            bestAttr = attr;
+        }
+    }
+
+    if (bestAttr == -1) {
+        node->isLeaf = true;
+        node->classLabel = majorityLabel(exampleIndices);
+        return node;
+    }
+
+    node->attributeIndex = bestAttr;
+    int k = attributeDomainSize[bestAttr];
+    node->numChildren = k;
+
+    // Prepare remaining attribute list for children
+    vector<int> childAttrs;
+    for (int attr : remainingAttributes) {
+        if (attr != bestAttr) childAttrs.push_back(attr);
+    }
+
+    // Partition examples by attribute value and recurse
+    for (int v = 0; v < k; ++v) {
+        vector<int> subset;
+        for (int idx : exampleIndices) {
+            if (dataset[idx].attr[bestAttr] == v) {
+                subset.push_back(idx);
+            }
+        }
+        if (subset.empty()) {
+            // Leaf with majority label of parent examples
+            Node* leaf = new Node();
+            leaf->isLeaf = true;
+            leaf->classLabel = majorityLabel(exampleIndices);
+            node->children[v] = leaf;
+        } else {
+            node->children[v] = buildTree(subset, childAttrs);
+        }
+    }
+
+    return node;
+}
+
+// Classify a new example by walking the tree
+int classify(Node* root, const Example &ex) {
+    Node* node = root;
+    while (!node->isLeaf) {
+        int attr = node->attributeIndex;
+        int v = ex.attr[attr];
+        if (v < 0 || v >= node->numChildren || node->children[v] == nullptr) {
+            // Fallback to majority label if something is wrong
+            return 0;
+        }
+        node = node->children[v];
+    }
+    return node->classLabel;
+}
+
+// Optional: print tree structure (simple text)
+void printTree(Node* node, int depth = 0) {
+    for (int i = 0; i < depth; ++i) cout << "  ";
+    if (node->isLeaf) {
+        cout << "Leaf: label=" << (node->classLabel ? "WAIT" : "NO_WAIT") << "\n";
+        return;
+    }
+    cout << "Test attribute " << node->attributeIndex << "\n";
+    for (int v = 0; v < node->numChildren; ++v) {
+        for (int i = 0; i < depth + 1; ++i) cout << "  ";
+        cout << "value " << v << ":\n";
+        if (node->children[v]) {
+            printTree(node->children[v], depth + 2);
+        }
+    }
+}
+
 int main() {
-    cout << "Decision Tree: Restaurant Waiting Problem\n\n";
+    cout << "Decision Tree Learning: Restaurant Waiting Problem\n\n";
 
-    double gain = infoGainOnHungry();
-    cout << "Information gain for splitting on 'Hungry': " << gain << "\n\n";
+    // Build tree from the dataset and all attributes {0,1,2,3,4}
+    vector<int> exampleIndices;
+    for (int i = 0; i < N; ++i) exampleIndices.push_back(i);
+    vector<int> attributes = {0, 1, 2, 3, 4};
 
-    bool alt, hungry;
-    int patrons, price, wait;
+    Node* root = buildTree(exampleIndices, attributes);
 
+    cout << "Learned decision tree structure:\n";
+    printTree(root);
+    cout << "\n";
+
+    // Read a new situation from user
+    Example ex;
     cout << "Enter attributes for a new situation.\n";
     cout << "Alternate restaurant available? (1=yes, 0=no): ";
-    cin >> alt;
+    cin >> ex.attr[0];
     cout << "Hungry? (1=yes, 0=no): ";
-    cin >> hungry;
+    cin >> ex.attr[1];
     cout << "Patrons (0=none, 1=some, 2=full): ";
-    cin >> patrons;
+    cin >> ex.attr[2];
     cout << "Price (0=cheap, 1=normal, 2=expensive): ";
-    cin >> price;
+    cin >> ex.attr[3];
     cout << "Wait estimate (0=0-10, 1=10-30, 2=30-60, 3=>60): ";
-    cin >> wait;
+    cin >> ex.attr[4];
 
-    bool decision = classifyWaitDecision(alt, hungry, patrons, price, wait);
-    if (decision) {
+    int decision = classify(root, ex);
+    if (decision == 1) {
         cout << "Decision: WAIT for a table.\n";
     } else {
         cout << "Decision: DO NOT WAIT.\n";
@@ -135,4 +257,5 @@ int main() {
 
     return 0;
 }
+
 

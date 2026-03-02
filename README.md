@@ -256,110 +256,181 @@ This mirrors PDDL operators with **preconditions** and **effects**, but written 
 
 ---
 
-## 3. Decision Tree – Restaurant Waiting Problem (`decision_tree_restaurant.cpp`)
+## Decision Tree – Restaurant Waiting Problem (`decision_tree_restaurant.cpp`)
 
-### Overview
+### 1. Goal and Idea
 
-- **Problem**: Decide whether to **wait for a table** at a restaurant.
-- **Related topic**: **Decision tree learning** (Chapter 19).
-- **Data structure**:
-
-```cpp
-struct Example {
-    bool alt;       // alternate restaurant available
-    bool hungry;    // hungry or not
-    int  patrons;   // 0 = none, 1 = some, 2 = full
-    int  price;     // 0 = cheap, 1 = normal, 2 = expensive
-    int  wait;      // 0 = 0-10, 1 = 10-30, 2 = 30-60, 3 = >60
-    bool waitDecision; // target: wait (true) or not (false)
-};
-```
-
-We keep a **small training dataset** in a fixed array `dataset[N]`.
-
-### Entropy and Information Gain
-
-#### `double entropy(double pYes, double pNo)`
-
-- **Purpose**: Compute binary entropy \(H(Y)\) for the target label.
-- **Formula**:  
-  \[
-    H(Y) = -p_{\text{yes}} \log_2 p_{\text{yes}} - p_{\text{no}} \log_2 p_{\text{no}}
-  \]
-- **How it works**:
-  - A helper `log2safe` returns 0 if probability is 0.
-  - Computes the sum as above.
-- **Why**: Entropy measures impurity of a node in a decision tree.
-
-#### `double infoGainOnHungry()`
-
-- **Purpose**: Demonstrate how **information gain** is computed for a split on the `hungry` attribute.
-- **Steps**:
-  1. Count number of positive and negative examples in the whole dataset.
-  2. Compute base entropy \(H(Y)\).
-  3. Partition the dataset into:
-     - `hungry == true` subset.
-     - `hungry == false` subset.
-  4. For each subset:
-     - Compute its entropy \(H(Y \mid hungry = v)\).
-  5. Compute conditional entropy:
-     \[
-     H(Y \mid hungry) = \sum_v P(hungry=v) H(Y \mid hungry=v)
-     \]
-  6. Return:
-     \[
-     \text{Gain}(Y, hungry) = H(Y) - H(Y \mid hungry)
-     \]
-- **Why**: This is exactly what **ID3** does to choose the best attribute for splitting.
-
-### Hard‑Coded Decision Tree: `classifyWaitDecision(...)`
-
-```cpp
-bool classifyWaitDecision(bool alt, bool hungry, int patrons, int price, int wait);
-```
-
-- **Purpose**: Use a **simple decision tree** (hand‑coded) to classify a new situation.
-- **Simplified rules**:
-  - If `patrons == 0` → **do not wait**.
-  - Else if `patrons == 1` → **wait**.
-  - Else (`patrons == full`):
-    - If `price == expensive` **and** `wait` is `30–60` or `>60` → **do not wait**.
-    - Else → **wait**.
-- **Note**:
-  - Attributes `alt` and `hungry` are **not used** in this small tree, but they are part of the interface to show how attributes can be added.
-- **Relationship to learning**:
-  - In a full implementation, a learning algorithm like ID3 would **build this tree automatically** from many examples using entropy and information gain.  
-  - Here we demonstrate:
-    - How to compute information gain (for one attribute).
-    - How a tree can be represented as nested `if/else` code.
-
-#### `main()`
-
-- **Steps**:
-  1. Prints the information gain for the `hungry` attribute.
-  2. Reads attributes for a new situation from `cin`.
-  3. Calls `classifyWaitDecision` to get the decision.
-  4. Prints:
-     - `"WAIT for a table."` or
-     - `"DO NOT WAIT."`
+- **Goal**: Decide whether to **wait for a table** at a restaurant.
+- **Chapter**: Learning decision trees (ID3) – Chapter 19.
+- **Key idea**: Learn a **decision tree** from examples using **entropy** and **information gain**, then use that tree to classify new situations (not hard‑coded rules).
 
 ---
 
-## How to Compile and Run
+### 2. Data Representation
 
-Use any standard C++ compiler (e.g. `g++`).
+#### 2.1 Training example
 
-- **Tic‑Tac‑Toe (alpha–beta)**:
-  ```bash
-  g++ tic_tac_toe_alpha_beta.cpp -o ttt
-  ./ttt
-  ```
+```cpp
+struct Example {
+    int attr[5];   // 0: alt, 1: hungry, 2: patrons, 3: price, 4: wait
+    int label;     // 0 = DO NOT WAIT, 1 = WAIT
+};
+```
 
-- **Blocks world planner**:
-  ```bash
-  g++ blocks_world_planning.cpp -o blocks
-  ./blocks
-  ```
+- **Attributes**:
+  - `attr[0]` (`alt`): 0 = no alternate restaurant, 1 = alternate exists.
+  - `attr[1]` (`hungry`): 0 = not hungry, 1 = hungry.
+  - `attr[2]` (`patrons`): 0 = none, 1 = some, 2 = full.
+  - `attr[3]` (`price`): 0 = cheap, 1 = normal, 2 = expensive.
+  - `attr[4]` (`wait`): 0 = 0–10, 1 = 10–30, 2 = 30–60, 3 = >60 minutes.
+
+- **Label**:
+  - `label = 1` → **WAIT**.
+  - `label = 0` → **DO NOT WAIT**.
+
+A small fixed array `dataset[N]` of `Example` objects is used as the training set.
+
+#### 2.2 Tree node
+
+```cpp
+struct Node {
+    bool isLeaf;
+    int  classLabel;     // valid if isLeaf == true
+    int  attributeIndex; // index of tested attribute (0..4)
+    int  numChildren;    // number of possible values
+    Node* children[4];   // child per attribute value
+};
+```
+
+- **Leaf node**: `isLeaf = true`, `classLabel` is 0 or 1 (final decision).
+- **Internal node**: `isLeaf = false`,
+  - `attributeIndex` tells which attribute to test,
+  - `children[v]` points to the subtree used when that attribute has value `v`.
+
+---
+
+### 3. Entropy and Information Gain
+
+#### 3.1 Entropy
+
+```cpp
+double entropy(double pYes, double pNo);
+```
+
+- Computes binary entropy:
+  \[
+    H(Y) = -p_{\text{yes}}\log_2 p_{\text{yes}} - p_{\text{no}}\log_2 p_{\text{no}}
+  \]
+- If all examples have the same label → entropy = 0 (pure node).
+- Mixed labels → higher entropy (impure node).
+
+#### 3.2 Information gain
+
+```cpp
+double informationGain(const vector<int> &exampleIndices, int attrIndex);
+```
+
+- **Inputs**:
+  - `exampleIndices`: indices of examples at the current node.
+  - `attrIndex`: attribute we consider splitting on.
+- **Steps**:
+  1. Use all `exampleIndices` to compute base entropy \(H(Y)\).
+  2. For each value `v` of that attribute:
+     - Collect the subset where `attr[attrIndex] == v`.
+     - Compute entropy of that subset.
+     - Weight by the fraction of examples in that subset.
+  3. Sum weighted entropies → \(H(Y \mid \text{attr})\).
+  4. Return gain:
+     \[
+     \text{Gain}(Y,\text{attr}) = H(Y) - H(Y \mid \text{attr})
+     \]
+- The attribute with **maximum information gain** is chosen for splitting (ID3 rule).
+
+---
+
+### 4. Helper Functions
+
+#### 4.1 `allSameLabel`
+
+```cpp
+bool allSameLabel(const vector<int> &exampleIndices, int &labelOut);
+```
+
+- Returns `true` if **all** examples at this node have the same label.
+- Sets `labelOut` to that label (0 or 1).
+- Used as a **stopping condition**: if true, we create a leaf node.
+
+#### 4.2 `majorityLabel`
+
+```cpp
+int majorityLabel(const vector<int> &exampleIndices);
+```
+
+- Counts how many examples are label 0 and label 1.
+- Returns the label that occurs more often.
+- Used when:
+  - No attributes remain to split on, or
+  - A branch gets no training examples (empty subset).
+
+---
+
+### 5. Building the Tree (ID3)
+
+#### 5.1 `buildTree`
+
+```cpp
+Node* buildTree(const vector<int> &exampleIndices,
+                const vector<int> &remainingAttributes);
+```
+
+- **Inputs**:
+  - `exampleIndices`: examples in this node.
+  - `remainingAttributes`: attributes still allowed for splitting.
+
+- **Algorithm**:
+  1. If `allSameLabel` is true → return a **leaf** with that label.
+  2. If `remainingAttributes` is empty → return a **leaf** with `majorityLabel`.
+  3. For each attribute in `remainingAttributes`, compute `informationGain`.
+  4. Choose `bestAttr` = attribute with **max gain**.
+  5. Create an internal `Node`:
+     - `attributeIndex = bestAttr`, `numChildren` = domain size.
+  6. For each value `v` of `bestAttr`:
+     - Build a subset of examples with `attr[bestAttr] == v`.
+     - If subset is empty → child is a leaf with parent `majorityLabel`.
+     - Else → child is `buildTree(subset, remainingAttributes − {bestAttr})`.
+
+This is a direct, small implementation of the **ID3** decision tree algorithm.
+
+---
+
+### 6. Classification and Output
+
+#### 6.1 `classify`
+
+```cpp
+int classify(Node* root, const Example &ex);
+```
+
+- Start at `root` and repeat:
+  - If `node->isLeaf` → return `node->classLabel`.
+  - Otherwise:
+    - Let `a = node->attributeIndex`.
+    - Let `v = ex.attr[a]`.
+    - Move to `node = node->children[v]`.
+- Result:
+  - `1` → print **“WAIT for a table.”**
+  - `0` → print **“DO NOT WAIT.”**
+
+#### 6.2 `main` function flow
+
+- Build `exampleIndices = {0..N-1}` and `attributes = {0,1,2,3,4}`.
+- Call `buildTree(exampleIndices, attributes)` to learn the tree.
+- Call `printTree(root)` to show the structure (for explanation).
+- Read a new situation from the user (values for all 5 attributes).
+- Pack into an `Example ex` and call `classify(root, ex)`.
+- Print the final decision (wait / do not wait).
+
+This completes a simple, end‑to‑end demonstration of **learning and using** a decision tree for the restaurant waiting problem.
 
 - **Decision tree (restaurant)**:
   ```bash
