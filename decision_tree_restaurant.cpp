@@ -1,209 +1,182 @@
 #include <iostream>
-#include <vector>
-#include <cmath>
 using namespace std;
 
-struct Example {
-    int attr[5];   // attributes
-    int label;     // 0 = NO_WAIT, 1 = WAIT
+// Simple Tic-Tac-Toe with alpha-beta pruning on a 3x3 board.
+// Player 'X' is the maximizer (computer), 'O' is the minimizer (human or another player).
+
+const int BOARD_SIZE = 3;
+
+struct GameState {
+    char board[BOARD_SIZE][BOARD_SIZE];
 };
 
-const int N = 8;
-
-// training dataset
-Example dataset[N] = {
-    {{1, 1, 2, 2, 3}, 0},
-    {{1, 1, 2, 1, 1}, 1},
-    {{0, 1, 1, 0, 0}, 1},
-    {{1, 0, 1, 2, 0}, 0},
-    {{0, 1, 0, 1, 0}, 0},
-    {{0, 0, 2, 1, 2}, 0},
-    {{1, 1, 1, 1, 1}, 1},
-    {{1, 0, 2, 0, 1}, 1}
-};
-
-int attributeDomainSize[5] = {2, 2, 3, 3, 4};
-
-struct Node {
-    bool isLeaf;
-    int classLabel;
-    int attributeIndex;
-    int numChildren;
-    Node* children[4];
-
-    Node() {
-        isLeaf = false;
-        classLabel = 0;
-        attributeIndex = -1;
-        numChildren = 0;
-        for (int i = 0; i < 4; i++) children[i] = nullptr;
-    }
-};
-
-// entropy calculation
-double entropy(double pYes, double pNo) {
-    auto log2safe = [](double x) {
-        if (x <= 0) return 0.0;
-        return log(x) / log(2.0);
-    };
-
-    double h = 0;
-    if (pYes > 0) h -= pYes * log2safe(pYes);
-    if (pNo > 0) h -= pNo * log2safe(pNo);
-    return h;
-}
-
-// information gain calculation
-double informationGain(const vector<int>& idx, int attr) {
-    int yes = 0, no = 0;
-
-    for (int i : idx)
-        dataset[i].label ? yes++ : no++;
-
-    double total = idx.size();
-    double base = entropy(yes / total, no / total);
-
-    int valT[4] = {0}, valY[4] = {0}, valN[4] = {0};
-
-    for (int i : idx) {
-        int v = dataset[i].attr[attr];
-        valT[v]++;
-        dataset[i].label ? valY[v]++ : valN[v]++;
-    }
-
-    double cond = 0;
-
-    for (int v = 0; v < attributeDomainSize[attr]; v++) {
-        if (!valT[v]) continue;
-        double pY = valY[v] / (double)valT[v];
-        double pN = valN[v] / (double)valT[v];
-        cond += (valT[v] / total) * entropy(pY, pN);
-    }
-
-    return base - cond;
-}
-
-// check pure node
-bool allSameLabel(const vector<int>& idx, int &label) {
-    label = dataset[idx[0]].label;
-    for (int i : idx)
-        if (dataset[i].label != label) return false;
-    return true;
-}
-
-// majority voting
-int majorityLabel(const vector<int>& idx) {
-    int y = 0, n = 0;
-    for (int i : idx)
-        dataset[i].label ? y++ : n++;
-    return (y >= n);
-}
-
-// ID3 tree building
-Node* buildTree(const vector<int>& idx, const vector<int>& attrs) {
-    Node* node = new Node();
-
-    int label;
-    if (allSameLabel(idx, label)) {
-        node->isLeaf = true;
-        node->classLabel = label;
-        return node;
-    }
-
-    if (attrs.empty()) {
-        node->isLeaf = true;
-        node->classLabel = majorityLabel(idx);
-        return node;
-    }
-
-    double bestGain = -1;
-    int bestAttr = -1;
-
-    for (int a : attrs) {
-        double g = informationGain(idx, a);
-        if (g > bestGain) {
-            bestGain = g;
-            bestAttr = a;
+void initBoard(GameState &state) {
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            state.board[i][j] = ' ';
         }
     }
+}
 
-    node->attributeIndex = bestAttr;
-    node->numChildren = attributeDomainSize[bestAttr];
+void printBoard(const GameState &state) {
+    cout << "\n";
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            cout << " " << state.board[i][j];
+            if (j < BOARD_SIZE - 1) cout << " |";
+        }
+        cout << "\n";
+        if (i < BOARD_SIZE - 1) cout << "---+---+---\n";
+    }
+    cout << "\n";
+}
 
-    vector<int> newAttrs;
-    for (int a : attrs)
-        if (a != bestAttr) newAttrs.push_back(a);
+bool movesLeft(const GameState &state) {
+    for (int i = 0; i < BOARD_SIZE; ++i)
+        for (int j = 0; j < BOARD_SIZE; ++j)
+            if (state.board[i][j] == ' ')
+                return true;
+    return false;
+}
 
-    for (int v = 0; v < node->numChildren; v++) {
-        vector<int> subset;
-
-        for (int i : idx)
-            if (dataset[i].attr[bestAttr] == v)
-                subset.push_back(i);
-
-        if (subset.empty()) {
-            Node* leaf = new Node();
-            leaf->isLeaf = true;
-            leaf->classLabel = majorityLabel(idx);
-            node->children[v] = leaf;
-        } else {
-            node->children[v] = buildTree(subset, newAttrs);
+// Returns +10 if 'X' has won, -10 if 'O' has won, 0 otherwise
+int evaluate(const GameState &state) {
+    // Rows
+    for (int row = 0; row < BOARD_SIZE; ++row) {
+        if (state.board[row][0] != ' ' &&
+            state.board[row][0] == state.board[row][1] &&
+            state.board[row][1] == state.board[row][2]) {
+            return state.board[row][0] == 'X' ? 10 : -10;
         }
     }
-
-    return node;
+    // Columns
+    for (int col = 0; col < BOARD_SIZE; ++col) {
+        if (state.board[0][col] != ' ' &&
+            state.board[0][col] == state.board[1][col] &&
+            state.board[1][col] == state.board[2][col]) {
+            return state.board[0][col] == 'X' ? 10 : -10;
+        }
+    }
+    // Diagonals
+    if (state.board[0][0] != ' ' &&
+        state.board[0][0] == state.board[1][1] &&
+        state.board[1][1] == state.board[2][2]) {
+        return state.board[0][0] == 'X' ? 10 : -10;
+    }
+    if (state.board[0][2] != ' ' &&
+        state.board[0][2] == state.board[1][1] &&
+        state.board[1][1] == state.board[2][0]) {
+        return state.board[0][2] == 'X' ? 10 : -10;
+    }
+    return 0;
 }
 
-// classification
-int classify(Node* root, const Example &ex) {
-    Node* node = root;
+// Alpha-beta minimax
+int alphaBeta(GameState &state, int depth, int alpha, int beta, bool isMaximizing) {
+    int score = evaluate(state);
 
-    while (!node->isLeaf) {
-        int a = node->attributeIndex;
-        int v = ex.attr[a];
-        node = node->children[v];
+    // Terminal states
+    if (score == 10 || score == -10)
+        return score;
+    if (!movesLeft(state))
+        return 0;
+
+    if (isMaximizing) {
+        int best = -1000;
+        for (int i = 0; i < BOARD_SIZE; ++i) {
+            for (int j = 0; j < BOARD_SIZE; ++j) {
+                if (state.board[i][j] == ' ') {
+                    state.board[i][j] = 'X';
+                    int value = alphaBeta(state, depth + 1, alpha, beta, false);
+                    state.board[i][j] = ' ';
+                    if (value > best) best = value;
+                    if (best > alpha) alpha = best;
+                    if (beta <= alpha)
+                        return best; // beta cut-off
+                }
+            }
+        }
+        return best;
+    } else {
+        int best = 1000;
+        for (int i = 0; i < BOARD_SIZE; ++i) {
+            for (int j = 0; j < BOARD_SIZE; ++j) {
+                if (state.board[i][j] == ' ') {
+                    state.board[i][j] = 'O';
+                    int value = alphaBeta(state, depth + 1, alpha, beta, true);
+                    state.board[i][j] = ' ';
+                    if (value < best) best = value;
+                    if (best < beta) beta = best;
+                    if (beta <= alpha)
+                        return best; // alpha cut-off
+                }
+            }
+        }
+        return best;
     }
-
-    return node->classLabel;
 }
 
-// print tree
-void printTree(Node* node, int depth = 0) {
-    for (int i = 0; i < depth; i++) cout << "  ";
+pair<int,int> findBestMove(GameState &state) {
+    int bestVal = -1000;
+    pair<int,int> bestMove = {-1, -1};
 
-    if (node->isLeaf) {
-        cout << "Leaf: " << (node->classLabel ? "WAIT" : "NO_WAIT") << "\n";
-        return;
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            if (state.board[i][j] == ' ') {
+                state.board[i][j] = 'X';
+                int moveVal = alphaBeta(state, 0, -1000, 1000, false);
+                state.board[i][j] = ' ';
+                if (moveVal > bestVal) {
+                    bestMove = {i, j};
+                    bestVal = moveVal;
+                }
+            }
+        }
     }
-
-    cout << "Test attribute " << node->attributeIndex << "\n";
-
-    for (int v = 0; v < node->numChildren; v++) {
-        for (int i = 0; i < depth + 1; i++) cout << "  ";
-        cout << "value " << v << ":\n";
-        if (node->children[v])
-            printTree(node->children[v], depth + 2);
-    }
+    return bestMove;
 }
 
 int main() {
-    vector<int> idx, attrs = {0,1,2,3,4};
+    GameState state;
+    initBoard(state);
 
-    for (int i = 0; i < N; i++) idx.push_back(i);
+    cout << "Tic-Tac-Toe with Alpha-Beta Pruning\n";
+    cout << "Computer: X (maximizer), You: O (minimizer)\n";
 
-    Node* root = buildTree(idx, attrs);
+    bool computerTurn = true;
 
-    cout << "Decision Tree:\n";
-    printTree(root);
+    while (true) {
+        printBoard(state);
+        int score = evaluate(state);
+        if (score == 10) {
+            cout << "Computer (X) wins!\n";
+            break;
+        } else if (score == -10) {
+            cout << "You (O) win!\n";
+            break;
+        } else if (!movesLeft(state)) {
+            cout << "It's a draw!\n";
+            break;
+        }
 
-    Example ex;
+        if (computerTurn) {
+            pair<int,int> move = findBestMove(state);
+            state.board[move.first][move.second] = 'X';
+            cout << "Computer plays: (" << move.first << ", " << move.second << ")\n";
+        } else {
+            int r, c;
+            cout << "Enter your move (row and column: 0, 1, or 2): ";
+            cin >> r >> c;
+            if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE || state.board[r][c] != ' ') {
+                cout << "Invalid move. Try again.\n";
+                continue;
+            }
+            state.board[r][c] = 'O';
+        }
+        computerTurn = !computerTurn;
+    }
 
-    cout << "\nEnter input:\n";
-    cin >> ex.attr[0] >> ex.attr[1] >> ex.attr[2] >> ex.attr[3] >> ex.attr[4];
-
-    int res = classify(root, ex);
-
-    cout << (res ? "WAIT" : "NO WAIT") << endl;
-
+    printBoard(state);
     return 0;
 }
+
